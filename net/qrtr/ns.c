@@ -118,6 +118,25 @@ int qrtr_get_service_id(unsigned int node_id, unsigned int port_id)
 }
 EXPORT_SYMBOL(qrtr_get_service_id);
 
+int qrtr_get_service_instance_id(unsigned int node_id, unsigned int port_id)
+{
+	struct qrtr_server *srv;
+	struct qrtr_node *node;
+	unsigned long index;
+
+	node = xa_load(&nodes, node_id);
+	if (!node)
+		return -EINVAL;
+
+	xa_for_each(&node->servers, index, srv) {
+		if (srv->node == node_id && srv->port == port_id)
+			return srv->instance;
+	}
+
+	return -EINVAL;
+}
+EXPORT_SYMBOL(qrtr_get_service_instance_id);
+
 static int server_match(const struct qrtr_server *srv,
 			const struct qrtr_server_filter *f)
 {
@@ -827,15 +846,6 @@ void qrtr_ns_remove(void)
 {
 	kthread_flush_worker(&qrtr_ns.kworker);
 	kthread_stop(qrtr_ns.task);
-
-	/* sock_release() expects the two references that were put during
-	 * qrtr_ns_init(). This function is only called during module remove,
-	 * so try_stop_module() has already set the refcnt to 0. Use
-	 * __module_get() instead of try_module_get() to successfully take two
-	 * references.
-	 */
-	__module_get(qrtr_ns.sock->ops->owner);
-	__module_get(qrtr_ns.sock->sk->sk_prot_creator->owner);
 	sock_release(qrtr_ns.sock);
 }
 EXPORT_SYMBOL_GPL(qrtr_ns_remove);
