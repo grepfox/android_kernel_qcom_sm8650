@@ -20,20 +20,6 @@
 #include "stmmac.h"
 #include "stmmac_platform.h"
 
-static int phytype = -1;
-
-/**
- * stmmac_set_phytype - sets the phytype
- * @p_type: Phy type argument obtained from kernel params
- * Description: this function assigns phy type such as 1G and 2.5G
- * based on the params obtained from the kernel param i.e., enet
- */
-void stmmac_set_phytype(int p_type)
-{
-	phytype = p_type;
-}
-EXPORT_SYMBOL_GPL(stmmac_set_phytype);
-
 #ifdef CONFIG_OF
 
 /**
@@ -362,7 +348,7 @@ static int stmmac_dt_phy(struct plat_stmmacenet_data *plat,
 		mdio = true;
 	}
 
-	if (mdio || phytype != SWITCH) {
+	if (mdio) {
 		plat->mdio_bus_data =
 			devm_kzalloc(dev, sizeof(struct stmmac_mdio_bus_data),
 				     GFP_KERNEL);
