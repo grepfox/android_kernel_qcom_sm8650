@@ -1589,7 +1589,7 @@ static int clk_rcg2_shared_init(struct clk_hw *hw)
 	 */
 	clk_rcg2_shared_disable(hw);
 
-	return clk_rcg2_init(hw);
+	return 0;
 }
 
 const struct clk_ops clk_rcg2_shared_ops = {
@@ -1606,6 +1606,7 @@ const struct clk_ops clk_rcg2_shared_ops = {
 	.determine_rate = clk_rcg2_determine_rate,
 	.set_rate = clk_rcg2_shared_set_rate,
 	.set_rate_and_parent = clk_rcg2_shared_set_rate_and_parent,
+	.init = clk_rcg2_init,
 	.debug_init = clk_common_debug_init,
 };
 EXPORT_SYMBOL_GPL(clk_rcg2_shared_ops);
