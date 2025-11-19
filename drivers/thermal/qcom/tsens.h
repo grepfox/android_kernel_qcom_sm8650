@@ -19,10 +19,6 @@
 #define THRESHOLD_MIN_ADC_CODE	0x0
 #define COLD_SENSOR_HW_ID	128
 
-#define TSENS_ELEVATE_DELTA	10000
-#define TSENS_ELEVATE_CPU_DELTA	5000
-#define TSENS_ELEVATE_HOT_DELTA	3000
-
 #include <linux/interrupt.h>
 #include <linux/thermal.h>
 #include <linux/regmap.h>
@@ -619,8 +615,7 @@ struct tsens_priv {
 	int				crit_irq;
 	int				cold_irq;
 
-	bool				need_trip_update;
-	bool				tm_disable_on_suspend;
+	bool			tm_disable_on_suspend;
 
 	struct dentry			*debug_root;
 	struct dentry			*debug;
