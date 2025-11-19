@@ -262,8 +262,6 @@ static const char *const pmic_models[] = {
 	[52] = "PMR735B",
 	[58] = "PM8450",
 	[65] = "PM8010",
-	[78] = "PMM8650",
-	[79] = "PMM8650",
 };
 #endif /* CONFIG_DEBUG_FS */
 
@@ -329,8 +327,6 @@ struct socinfo {
 	__le32 boot_core;
 	/* Version 20 */
 	__le32 raw_package_type;
-	/* Version 21 */
-	__le32 nsubpart_feat_array_offset;
 } *socinfo;
 
 #ifdef CONFIG_DEBUG_FS
@@ -358,7 +354,6 @@ struct socinfo_params {
 	u32 boot_cluster;
 	u32 boot_core;
 	u32 raw_package_type;
-	u32 nsubpart_feat_array_offset;
 };
 
 struct smem_image_version {
@@ -580,7 +575,6 @@ static const struct soc_id soc_id[] = {
 	{ 565, "BLAIRP" },
 	{ 629, "NIOBE" },
 	{ 652, "NIOBE" },
-	{ 672, "SERAPH" },
 	{ 577, "PINEAPPLEP" },
 	{ 578, "BLAIR-LITE" },
 	{ 605, "SA_MONACOAU_ADAS" },
@@ -596,7 +590,6 @@ static const struct soc_id soc_id[] = {
 	{ 642, "CLIFFSP" },
 	{ 643, "CLIFFS7P" },
 	{ 549, "ANORAK" },
-	{ 554, "NEO-LA" },
 };
 
 static struct attribute *msm_custom_socinfo_attrs[MAX_SOCINFO_ATTRS];
@@ -755,15 +748,6 @@ static uint32_t socinfo_get_pcode_id(void)
 		return SOCINFO_PCODE_UNKNOWN;
 
 	return pcode;
-}
-
-/* Version 21 */
-static uint32_t socinfo_get_nsubpart_feat_array_offset(void)
-{
-	return socinfo ?
-		(socinfo_format >= SOCINFO_VERSION(0, 21) ?
-		 le32_to_cpu(socinfo->nsubpart_feat_array_offset) : 0)
-		: 0;
 }
 
 /* Exported APIs */
@@ -962,9 +946,6 @@ socinfo_get_subpart_info(enum subset_part_type part,
 
 	num_subset_parts = socinfo_get_num_subset_parts();
 	offset = socinfo_get_nsubset_parts_array_offset();
-	if (socinfo_format >= SOCINFO_VERSION(0, 21))
-		offset = socinfo_get_nsubpart_feat_array_offset();
-
 	if (!num_subset_parts || !offset)
 		return -EINVAL;
 
@@ -1200,7 +1181,6 @@ static void socinfo_populate_sysfs(struct qcom_socinfo *qcom_socinfo)
 	int i = 0;
 
 	switch (socinfo_format) {
-	case SOCINFO_VERSION(0, 21):
 	case SOCINFO_VERSION(0, 20):
 	case SOCINFO_VERSION(0, 19):
 	case SOCINFO_VERSION(0, 18):
@@ -1453,7 +1433,6 @@ static void socinfo_debugfs_init(struct qcom_socinfo *qcom_socinfo,
 			   &qcom_socinfo->info.fmt);
 
 	switch (qcom_socinfo->info.fmt) {
-	case SOCINFO_VERSION(0, 21):
 	case SOCINFO_VERSION(0, 20):
 		qcom_socinfo->info.raw_package_type = __le32_to_cpu(info->raw_package_type);
 		debugfs_create_u32("raw_package_type", 0444, qcom_socinfo->dbg_root,

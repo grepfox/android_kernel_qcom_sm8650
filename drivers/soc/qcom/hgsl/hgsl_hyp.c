@@ -513,7 +513,6 @@ static int hgsl_rpc_create_channel(
 	struct hgsl_hab_channel_t *hab_channel
 		= (struct hgsl_hab_channel_t *)hgsl_zalloc(
 					sizeof(struct hgsl_hab_channel_t));
-	bool first_handshake = false;
 
 	if (hab_channel == NULL) {
 		LOGE("Failed to allocate hab_channel");
@@ -546,13 +545,10 @@ static int hgsl_rpc_create_channel(
 		}
 		hab_channel->socket = socket;
 		ret = rpc_handshake(priv, hab_channel);
+		if (ret)
+			LOGE("rpc_handshake failed %d", ret);
 		gsl_hab_close(socket);
 		hab_channel->socket = HAB_INVALID_HANDLE;
-		if (unlikely(ret)) {
-			LOGE("rpc_handshake failed %d", ret);
-			goto out;
-		}
-		first_handshake = true;
 	}
 
 	ret = hgsl_rpc_connect(priv, &socket);
@@ -562,19 +558,10 @@ static int hgsl_rpc_create_channel(
 	}
 	hab_channel->socket = socket;
 	ret = rpc_sub_handshake(priv, hab_channel);
-	if (unlikely(ret)) {
+	if (ret) {
 		LOGE("sub handshake failed %d", ret);
 		gsl_hab_close(socket);
 		hab_channel->socket = HAB_INVALID_HANDLE;
-		if (first_handshake) {
-			/* The sub handshake may failed due to the overhead
-			 * of hab transition between GVM and PVM, we shall
-			 * reset conn_id and overwrite errno to EAGAIN, let
-			 * userspace retry to create hab channel again.
-			 */
-			priv->conn_id = 0;
-			ret = -EAGAIN;
-		}
 	}
 
 out:

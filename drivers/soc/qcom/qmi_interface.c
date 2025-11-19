@@ -14,11 +14,6 @@
 #include <linux/workqueue.h>
 #include <linux/rcupdate.h>
 #include <linux/soc/qcom/qmi.h>
-#include <linux/ipc_logging.h>
-
-#define QMI_LOG_PAGE_CNT 8
-static void *qmi_ilc;
-#define QMI_INFO(x, ...) ipc_log_string(qmi_ilc, x, ##__VA_ARGS__)
 
 static struct socket *qmi_sock_create(struct qmi_handle *qmi,
 				      struct sockaddr_qrtr *sq);
@@ -222,8 +217,6 @@ int qmi_add_lookup(struct qmi_handle *qmi, unsigned int service,
 	svc->version = version;
 	svc->instance = instance;
 
-	qmi->svc_id = service;
-
 	list_add(&svc->list_node, &qmi->lookups);
 
 	qmi_send_new_lookup(qmi, svc);
@@ -287,7 +280,6 @@ int qmi_add_server(struct qmi_handle *qmi, unsigned int service,
 	svc->service = service;
 	svc->version = version;
 	svc->instance = instance;
-	qmi->svc_id = service;
 
 	list_add(&svc->list_node, &qmi->services);
 
@@ -320,6 +312,7 @@ int qmi_txn_init(struct qmi_handle *qmi, struct qmi_txn *txn,
 
 	memset(txn, 0, sizeof(*txn));
 
+	//mutex_init(&txn->lock);
 	init_completion(&txn->completion);
 	txn->qmi = qmi;
 	txn->ei = ei;
@@ -360,6 +353,9 @@ int qmi_txn_wait(struct qmi_txn *txn, unsigned long timeout)
 
 	mutex_lock(&qmi->txn_lock);
 	idr_remove(&qmi->txns, txn->id);
+	//mutex_lock(&txn->lock);
+	idr_remove(&qmi->txns, txn->id);
+	//mutex_unlock(&txn->lock);
 	mutex_unlock(&qmi->txn_lock);
 
 	if (ret == 0)
@@ -379,6 +375,9 @@ void qmi_txn_cancel(struct qmi_txn *txn)
 
 	mutex_lock(&qmi->txn_lock);
 	idr_remove(&qmi->txns, txn->id);
+	//mutex_lock(&txn->lock);
+	idr_remove(&qmi->txns, txn->id);
+	//mutex_unlock(&txn->lock);
 	mutex_unlock(&qmi->txn_lock);
 }
 EXPORT_SYMBOL(qmi_txn_cancel);
@@ -414,11 +413,8 @@ static void qmi_invoke_handler(struct qmi_handle *qmi, struct sockaddr_qrtr *sq,
 		return;
 
 	dest = kzalloc(handler->decoded_size, GFP_KERNEL);
-	if (!dest) {
-		QMI_INFO("failed to allocate memory of decoded_size: 0x%x svc_id:0x%x\n",
-			 handler->decoded_size, qmi->svc_id);
+	if (!dest)
 		return;
-	}
 
 	ret = qmi_decode_message(buf, len, handler->ei, dest);
 	if (ret < 0)
@@ -501,11 +497,13 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 
 		/* Ignore unexpected responses */
 		if (!txn) {
-			QMI_INFO("txn_id 0x%x svc_id:0x%x not found for remote[0x%x:0x%x]\n",
-				 hdr->txn_id, qmi->svc_id, sq->sq_node, sq->sq_port);
 			mutex_unlock(&qmi->txn_lock);
 			return;
 		}
+
+		//mutex_lock(&txn->lock);
+		//mutex_unlock(&qmi->txn_lock);
+
 		if (txn->dest && txn->ei) {
 			ret = qmi_decode_message(buf, len, txn->ei, txn->dest);
 			if (ret < 0)
@@ -516,6 +514,8 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 		} else {
 			qmi_invoke_handler(qmi, sq, txn, buf, len);
 		}
+
+		//mutex_unlock(&txn->lock);
 		mutex_unlock(&qmi->txn_lock);
 	} else {
 		/* Create a txn based on the txn_id of the incoming message */
@@ -524,33 +524,6 @@ static void qmi_handle_message(struct qmi_handle *qmi,
 
 		qmi_invoke_handler(qmi, sq, &tmp_txn, buf, len);
 	}
-}
-
-static void qmi_log_msg(const void *buf,
-			struct sockaddr_qrtr *sq, unsigned int svc_id)
-{
-	const struct qrtr_ctrl_pkt *pkt = (struct qrtr_ctrl_pkt *)buf;
-	const struct qmi_header *hdr = (struct qmi_header *)buf;
-	unsigned int cmd;
-
-	cmd = le32_to_cpu(pkt->cmd);
-
-	if (cmd == QRTR_TYPE_BYE)
-		QMI_INFO("cmd:0x%x node[0x%x]\n", cmd, sq->sq_node);
-	else if (cmd == QRTR_TYPE_DEL_CLIENT || cmd == QRTR_TYPE_RESUME_TX)
-		QMI_INFO("cmd:0x%x addr[0x%x:0x%x]\n", cmd,
-			  le32_to_cpu(pkt->client.node),
-			  le32_to_cpu(pkt->client.port));
-	else if (cmd == QRTR_TYPE_NEW_SERVER || cmd == QRTR_TYPE_DEL_SERVER)
-		QMI_INFO("cmd:0x%x SVC[0x%x:0x%x] addr[0x%x:0x%x]\n", cmd,
-			  le32_to_cpu(pkt->server.service),
-			  le32_to_cpu(pkt->server.instance),
-			  le32_to_cpu(pkt->server.node),
-			  le32_to_cpu(pkt->server.port));
-	else
-		QMI_INFO("DATA: type:%d txn_id:%d svc:0x%x, msg_id:%d len:%d sq[0x%x:0x%x]\n",
-			 hdr->type, hdr->txn_id, svc_id,
-			 hdr->msg_id, hdr->msg_len, sq->sq_node, sq->sq_port);
 }
 
 static void qmi_data_ready_work(struct work_struct *work)
@@ -578,8 +551,7 @@ static void qmi_data_ready_work(struct work_struct *work)
 
 		if (msglen == -ENETRESET) {
 			qmi_handle_net_reset(qmi);
-			QMI_INFO("Invoke ENETRESET on a QMI handle for svc_id:0x%x [0x%x:0x%x]\n",
-				 qmi->svc_id, sq.sq_node, sq.sq_port);
+
 			/* The old qmi->sock is gone, our work is done */
 			break;
 		}
@@ -588,8 +560,6 @@ static void qmi_data_ready_work(struct work_struct *work)
 			pr_err("qmi recvmsg failed: %zd\n", msglen);
 			break;
 		}
-
-		qmi_log_msg(qmi->recv_buf, &sq, qmi->svc_id);
 
 		if (sq.sq_node == qmi->sq.sq_node &&
 		    sq.sq_port == QRTR_PORT_CTRL) {
@@ -612,11 +582,8 @@ static void qmi_data_ready(struct sock *sk)
 	 */
 	rcu_read_lock();
 	qmi = rcu_dereference_sk_user_data(sk);
-	if (qmi) {
-		QMI_INFO("qmi recv pkt queued for svc_id:0x%x sock[0x%x:0x%x]\n",
-			 qmi->svc_id, qmi->sq.sq_node, qmi->sq.sq_port);
+	if (qmi)
 		queue_work(qmi->wq, &qmi->work);
-	}
 	rcu_read_unlock();
 }
 
@@ -706,9 +673,6 @@ int qmi_handle_init(struct qmi_handle *qmi, size_t recv_buf_size,
 		goto err_destroy_wq;
 	}
 
-	if (!qmi_ilc)
-		qmi_ilc = ipc_log_context_create(QMI_LOG_PAGE_CNT, "qmi_interface", 0);
-
 	return 0;
 
 err_destroy_wq:
@@ -733,8 +697,6 @@ void qmi_handle_release(struct qmi_handle *qmi)
 	struct qmi_txn *txn;
 	int txn_id;
 
-	QMI_INFO("%s : SVC ID: 0x%x sock[0x%x:0x%x]\n", __func__,
-			qmi->svc_id, qmi->sq.sq_node, qmi->sq.sq_port);
 	mutex_lock(&qmi->sock_lock);
 	sock = qmi->sock;
 	rcu_assign_sk_user_data(sock->sk, NULL);
