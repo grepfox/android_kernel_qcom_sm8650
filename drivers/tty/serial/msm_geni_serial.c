@@ -6,22 +6,19 @@
 
 #include <linux/bitmap.h>
 #include <linux/bitops.h>
-#include <linux/console.h>
 #include <linux/debugfs.h>
 #include <linux/delay.h>
-#include <linux/dmaengine.h>
+#include <linux/console.h>
 #include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
 #include <linux/io.h>
-#include <linux/ioctl.h>
 #include <linux/ipc_logging.h>
 #include <linux/irq.h>
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 #include <linux/msm_gpi.h>
-#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
-#include <linux/pinctrl/consumer.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 #include <linux/qcom-geni-se-common.h>
@@ -31,8 +28,14 @@
 #include <linux/suspend.h>
 #include <linux/tty.h>
 #include <linux/tty_flip.h>
+#include <linux/ioctl.h>
+#include <linux/pinctrl/consumer.h>
+#include <linux/dma-mapping.h>
 #include <uapi/linux/msm_geni_serial.h>
-#include <linux/bootmarker_kernel.h>
+
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+#include <linux/pogo_common.h>
+#endif
 
 static bool con_enabled = IS_ENABLED(CONFIG_SERIAL_MSM_GENI_CONSOLE_DEFAULT_ENABLED);
 
@@ -207,7 +210,23 @@ static bool con_enabled = IS_ENABLED(CONFIG_SERIAL_MSM_GENI_CONSOLE_DEFAULT_ENAB
 #define CREATE_TRACE_POINTS
 #include "serial_trace.h"
 
-#define BOOT_MARKER_SIZE	50
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+static struct pogo_keyboard_operations pogo_keyboard_ops = {
+	.name = "pogo_keyboard_ops",
+	.init = NULL,
+	.write = NULL,
+	.recv = NULL,
+	.resume = NULL,
+	.suspend = NULL,
+	.remove = NULL,
+	.check = NULL,
+};
+struct pogo_keyboard_operations *get_pogo_keyboard_operations(void)
+{
+	return &pogo_keyboard_ops;
+}
+EXPORT_SYMBOL_GPL(get_pogo_keyboard_operations);
+#endif
 
 /* FTRACE Logging */
 static void __ftrace_dbg(struct device *dev, const char *fmt, ...)
@@ -460,12 +479,6 @@ struct msm_geni_serial_port {
 	int hs_uart_operation;
 	struct msm_geni_serial_ssr uart_ssr;
 	struct geni_se_rsc rsc;
-	/**
-	 * mutex to prevent race condition between runtime
-	 * suspend and get_mctrl which tries to access IOS registers
-	 * when runtime suspend was in progress
-	 */
-	struct mutex suspend_resume_lock;
 };
 
 static const struct uart_ops msm_geni_serial_pops;
@@ -1412,26 +1425,17 @@ static unsigned int msm_geni_serial_get_mctrl(struct uart_port *uport)
 		return 0;
 	}
 
-	if (!uart_console(uport)) {
-		if (!mutex_trylock(&port->suspend_resume_lock)) {
-			UART_LOG_DBG(port->ipc_log_misc, uport->dev,
-					"%s.Device is being suspended, %s\n",
-					__func__, current->comm);
-			return mctrl;
-		}
-		if (device_pending_suspend(uport)) {
-			UART_LOG_DBG(port->ipc_log_misc, uport->dev,
-					"%s.Device is suspended, %s\n",
-					__func__, current->comm);
-			mutex_unlock(&port->suspend_resume_lock);
-			return mctrl | TIOCM_CTS;
-		}
+	if (!uart_console(uport) && device_pending_suspend(uport)) {
+		UART_LOG_DBG(port->ipc_log_misc, uport->dev,
+			     "%s.Device is suspended, %s\n",
+			     __func__, current->comm);
+		return TIOCM_DSR | TIOCM_CAR | TIOCM_CTS;
 	}
 
 	geni_ios = geni_read_reg(uport->membase, SE_GENI_IOS);
 	if (!(geni_ios & IO2_DATA_IN))
 		mctrl |= TIOCM_CTS;
-	else if (!uart_console(uport))
+	else
 		msm_geni_update_uart_error_code(port, SOC_ERROR_START_TX_IOS_SOC_RFR_HIGH);
 
 	if (!port->manual_flow)
@@ -1439,10 +1443,6 @@ static unsigned int msm_geni_serial_get_mctrl(struct uart_port *uport)
 
 	UART_LOG_DBG(port->ipc_log_misc, uport->dev, "%s: geni_ios:0x%x, mctrl:0x%x\n",
 		__func__, geni_ios, mctrl);
-
-	if (!uart_console(uport))
-		mutex_unlock(&port->suspend_resume_lock);
-
 	return mctrl;
 }
 
@@ -2445,6 +2445,14 @@ static int msm_geni_serial_prep_dma_tx(struct uart_port *uport)
 
 	if (!xmit_size)
 		return -EPERM;
+
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.write) {
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.write(NULL,1);
+		}
+	}
+#endif
 
 	dump_ipc(uport, msm_port->ipc_log_tx, "DMA Tx",
 		 (char *)&xmit->buf[xmit->tail], 0, xmit_size);
@@ -3461,6 +3469,14 @@ static int msm_geni_serial_handle_dma_rx(struct uart_port *uport, bool drop_rx)
 		}
 	}
 
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.recv){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.recv((unsigned char *)(msm_port->rx_buf), rx_bytes);
+		}
+	}
+#endif
+
 	tport = &uport->state->port;
 	ret = tty_insert_flip_string(tport, (unsigned char *)(msm_port->rx_buf), rx_bytes);
 	rx_bytes_copied = ret;
@@ -3667,8 +3683,16 @@ static bool handle_tx_dma_xfer(u32 m_irq_status, struct uart_port *uport)
 				/* Reset SOC_RFR_HIGH error code if DMA TX is success */
 				msm_geni_update_uart_error_code(msm_port, UART_ERROR_DEFAULT);
 			}
+		#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+			if(pogo_keyboard_ops.check && pogo_keyboard_ops.write) {
+					if(pogo_keyboard_ops.check(uport)) {
+						pogo_keyboard_ops.write(NULL, 0);
+				}
+			}
+		#endif
 		}
 	}
+
 	if (m_irq_status & (M_CMD_CANCEL_EN | M_CMD_ABORT_EN))
 		ret = true;
 	return ret;
@@ -4075,6 +4099,14 @@ static void msm_geni_serial_shutdown(struct uart_port *uport)
 	int ret = 0, j = 0, i, timeout;
 	unsigned long long start_time;
 
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.init){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.init(uport,0);
+		}
+	}
+#endif
+
 	UART_LOG_DBG(msm_port->ipc_log_misc, uport->dev, "%s: %d\n", __func__, true);
 	msm_port->port_state = UART_PORT_SHUTDOWN_IN_PROGRESS;
 
@@ -4334,6 +4366,14 @@ exit_startup:
 	if (likely(!uart_console(uport)))
 		msm_geni_serial_power_off(&msm_port->uport);
 	UART_LOG_DBG(msm_port->ipc_log_misc, uport->dev, "%s: ret:%d\n", __func__, ret);
+
+#ifdef CONFIG_OPLUS_POGOPIN_FUNCTION
+	if(pogo_keyboard_ops.check && pogo_keyboard_ops.init){
+		if(pogo_keyboard_ops.check(uport)) {
+			pogo_keyboard_ops.init(uport,1);
+		}
+	}
+#endif
 
 	return ret;
 }
@@ -5447,9 +5487,6 @@ static int msm_geni_serial_probe(struct platform_device *pdev)
 	struct uart_driver *drv;
 	const struct of_device_id *id;
 	bool is_console = false;
-	#if (IS_ENABLED(CONFIG_BOOTMARKER_PROXY))
-	char boot_marker[BOOT_MARKER_SIZE];
-	#endif
 
 	id = of_match_device(msm_geni_device_tbl, &pdev->dev);
 	if (!id) {
@@ -5494,24 +5531,10 @@ static int msm_geni_serial_probe(struct platform_device *pdev)
 		line = pdev->id;
 	}
 
-	if (drv->cons) {
-	#if (IS_ENABLED(CONFIG_BOOTMARKER_PROXY))
-		snprintf(boot_marker, sizeof(boot_marker),
-			"M - DRIVER GENI_CONSOLE_%d Init", line);
-		bootmarker_place_marker(boot_marker);
-	#else
-		dev_dbg(&pdev->dev, "M - DRIVER GENI_CONSOLE_%d Init\n", line);
-	#endif
-
-	} else {
-	#if (IS_ENABLED(CONFIG_BOOTMARKER_PROXY))
-		snprintf(boot_marker, sizeof(boot_marker),
-			"M - DRIVER GENI_HS_UART_%d Init", line);
-		bootmarker_place_marker(boot_marker);
-	#else
-		dev_dbg(&pdev->dev, "M - DRIVER GENI_HS_UART_%d Init\n", line);
-	#endif
-	}
+	if (drv->cons)
+		pr_info("boot_kpi: M - DRIVER GENI_CONSOLE_%d Init\n", line);
+	else
+		pr_info("boot_kpi: M - DRIVER GENI_HS_UART_%d Init\n", line);
 
 	is_console = (drv->cons ? true : false);
 	dev_port = get_port_from_line(line, is_console);
@@ -5635,31 +5658,16 @@ static int msm_geni_serial_probe(struct platform_device *pdev)
 	if (!dev_port->is_console)
 		spin_lock_init(&dev_port->rx_lock);
 
-	mutex_init(&dev_port->suspend_resume_lock);
-
 	ret = uart_add_one_port(drv, uport);
 	if (ret)
 		dev_err(&pdev->dev, "Failed to register uart_port: %d\n", ret);
 
 	msm_geni_check_stop_engine(uport);
 
-	if (is_console) {
-	#if (IS_ENABLED(CONFIG_BOOTMARKER_PROXY))
-		snprintf(boot_marker, sizeof(boot_marker),
-			"M - DRIVER GENI_CONSOLE_%d Ready", line);
-		bootmarker_place_marker(boot_marker);
-	#else
-		dev_dbg(&pdev->dev, "M - DRIVER GENI_CONSOLE_%d Ready\n", line);
-	#endif
-	} else {
-	#if (IS_ENABLED(CONFIG_BOOTMARKER_PROXY))
-		snprintf(boot_marker, sizeof(boot_marker),
-			"M - DRIVER GENI_HS_UART_%d Ready", line);
-		bootmarker_place_marker(boot_marker);
-	#else
-		dev_dbg(&pdev->dev, "M - DRIVER GENI_HS_UART_%d Ready\n", line);
-	#endif
-	}
+	if (is_console)
+		pr_info("boot_kpi: M - DRIVER GENI_CONSOLE_%d Ready\n", line);
+	else
+		pr_info("boot_kpi: M - DRIVER GENI_HS_UART_%d Ready\n", line);
 
 exit_geni_serial_probe:
 	UART_LOG_DBG(dev_port->ipc_log_misc, &pdev->dev, "%s: ret:%d\n",
@@ -5748,7 +5756,7 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 	unsigned long long start_time;
 	u32 geni_status = geni_read_reg(port->uport.membase,
 							SE_GENI_STATUS);
-	mutex_lock(&port->suspend_resume_lock);
+
 	UART_LOG_DBG(port->ipc_log_pwr, dev,
 		"%s: Start geni_status : 0x%x\n", __func__, geni_status);
 
@@ -5774,8 +5782,7 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 			 */
 			if (port->wakeup_byte && port->wakeup_irq)
 				msm_geni_serial_allow_rx(port);
-			ret = -EBUSY;
-			goto exit_runtime_suspend;
+			return -EBUSY;
 		}
 	}
 	/*
@@ -5792,8 +5799,7 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 		 */
 		if (port->wakeup_byte && port->wakeup_irq)
 			msm_geni_serial_allow_rx(port);
-		ret = -EBUSY;
-		goto exit_runtime_suspend;
+		return -EBUSY;
 	}
 
 	geni_status = geni_read_reg(port->uport.membase, SE_GENI_STATUS);
@@ -5824,8 +5830,7 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 			UART_LOG_DBG(port->ipc_log_pwr, dev,
 				     "%s: return, stop_rx_seq busy\n", __func__);
 			enable_irq(port->uport.irq);
-			ret = -EBUSY;
-			goto exit_runtime_suspend;
+			return -EBUSY;
 		}
 	}
 	if (count)
@@ -5861,7 +5866,6 @@ static int msm_geni_serial_runtime_suspend(struct device *dev)
 	UART_LOG_DBG(port->ipc_log_pwr, dev, "%s: End %d\n", __func__, ret);
 	__pm_relax(port->geni_wake);
 exit_runtime_suspend:
-	mutex_unlock(&port->suspend_resume_lock);
 	return ret;
 }
 
