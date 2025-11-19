@@ -247,8 +247,7 @@ static int tmc_enable_etf_sink_sysfs(struct coresight_device *csdev)
 		atomic_inc(csdev->refcnt);
 	} else {
 		/* Free up the buffer if we failed to enable */
-		kfree(drvdata->buf);
-		drvdata->buf = NULL;
+		used = false;
 	}
 out:
 	spin_unlock_irqrestore(&drvdata->spinlock, flags);
