@@ -305,11 +305,5 @@ struct plat_stmmacenet_data {
 	void (*phy_irq_disable)(void *priv);
 	bool early_eth;
 	bool need_reset;
-	bool mdio_op_busy;
-	atomic_t phy_clks_suspended;
-	struct completion mdio_op;
-	int board_type;
-	int phy_type;
-	int disable_pcs_ane;
 };
 #endif
