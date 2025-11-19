@@ -256,6 +256,7 @@ void page_cache_ra_unbounded(struct readahead_control *ractl,
 			continue;
 		}
 
+		trace_android_vh_io_statistics(mapping, index + i, 1, true, false);
 		folio = filemap_alloc_folio(gfp_mask, 0);
 		if (!folio)
 			break;
@@ -596,6 +597,9 @@ static void ondemand_readahead(struct readahead_control *ractl,
 	if (req_size > max_pages && bdi->io_pages > max_pages)
 		max_pages = min(req_size, bdi->io_pages);
 
+#ifdef CONFIG_OPLUS_DYNAMIC_READAHEAD
+	max_pages = adjust_readahead(ra, max_pages);
+#endif
 	trace_android_vh_ra_tuning_max_page(ractl, &max_pages);
 
 	/*
